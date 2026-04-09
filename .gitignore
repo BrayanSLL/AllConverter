@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+*.egg
+
+# Temp upload files
+uploads/
+
+# IDE
+.idea/
+.vscode/
+*.swp

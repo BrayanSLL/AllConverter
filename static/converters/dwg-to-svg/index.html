@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DWG / DXF → SVG — AllConverter</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f5f5f5;
+      color: #1a1a1a;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 16px;
+    }
+    header {
+      width: 100%;
+      max-width: 720px;
+      margin-bottom: 32px;
+    }
+    .back { color: #555; text-decoration: none; font-size: 0.9rem; }
+    .back:hover { color: #000; }
+    h1 { font-size: 1.75rem; font-weight: 700; margin-top: 12px; }
+    .subtitle { color: #555; margin-top: 4px; font-size: 0.95rem; }
+
+    .card {
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 12px;
+      padding: 32px;
+      width: 100%;
+      max-width: 720px;
+    }
+
+    /* Drop zone */
+    .drop-zone {
+      border: 2px dashed #ccc;
+      border-radius: 8px;
+      padding: 48px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .drop-zone.dragover { border-color: #1976d2; background: #e3f2fd; }
+    .drop-zone input[type="file"] { display: none; }
+    .drop-zone-icon { font-size: 2.5rem; margin-bottom: 12px; }
+    .drop-zone p { color: #555; font-size: 0.95rem; }
+    .drop-zone strong { color: #1976d2; }
+    .file-name {
+      margin-top: 12px;
+      font-size: 0.85rem;
+      color: #333;
+      font-weight: 500;
+    }
+
+    .btn {
+      display: block;
+      width: 100%;
+      margin-top: 20px;
+      padding: 12px;
+      background: #1976d2;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .btn:hover:not(:disabled) { background: #1565c0; }
+    .btn:disabled { background: #90caf9; cursor: not-allowed; }
+
+    /* Status messages */
+    .message {
+      margin-top: 16px;
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      display: none;
+    }
+    .message.error { background: #ffebee; color: #c62828; display: block; }
+    .message.warning { background: #fff8e1; color: #e65100; display: block; }
+    .message.success { background: #e8f5e9; color: #2e7d32; display: block; }
+
+    /* SVG preview */
+    .preview-section { margin-top: 24px; display: none; }
+    .preview-section h2 { font-size: 1rem; font-weight: 600; margin-bottom: 12px; }
+    .svg-container {
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      background: #fafafa;
+      overflow: auto;
+      max-height: 500px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .svg-container svg {
+      max-width: 100%;
+      height: auto;
+    }
+    .download-btn {
+      display: inline-block;
+      margin-top: 12px;
+      padding: 8px 20px;
+      background: #388e3c;
+      color: #fff;
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 0.9rem;
+      font-weight: 600;
+      transition: background 0.15s;
+    }
+    .download-btn:hover { background: #2e7d32; }
+
+    .spinner {
+      display: none;
+      width: 18px; height: 18px;
+      border: 3px solid rgba(255,255,255,0.4);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin: 0 auto;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <header>
+    <a class="back" href="/">← Retour à AllConverter</a>
+    <h1>DWG / DXF → SVG</h1>
+    <p class="subtitle">Convertit vos plans AutoCAD en SVG vectoriel, utilisable sur le web.</p>
+  </header>
+
+  <div class="card">
+    <div class="drop-zone" id="dropZone">
+      <input type="file" id="fileInput" accept=".dwg,.dxf">
+      <div class="drop-zone-icon">📂</div>
+      <p>Glissez-déposez votre fichier ici, ou <strong>cliquez pour parcourir</strong></p>
+      <p style="font-size:0.8rem; color:#888; margin-top:6px;">Formats acceptés : .dwg, .dxf — Max 50 Mo</p>
+      <div class="file-name" id="fileName"></div>
+    </div>
+
+    <button class="btn" id="convertBtn" disabled>
+      <span id="btnText">Convertir en SVG</span>
+      <div class="spinner" id="spinner"></div>
+    </button>
+
+    <div class="message" id="message"></div>
+
+    <div class="preview-section" id="previewSection">
+      <h2>Résultat</h2>
+      <div class="svg-container" id="svgContainer"></div>
+      <a class="download-btn" id="downloadLink" download="output.svg">Télécharger le SVG</a>
+    </div>
+  </div>
+
+  <script>
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+    const fileNameEl = document.getElementById('fileName');
+    const convertBtn = document.getElementById('convertBtn');
+    const btnText = document.getElementById('btnText');
+    const spinner = document.getElementById('spinner');
+    const messageEl = document.getElementById('message');
+    const previewSection = document.getElementById('previewSection');
+    const svgContainer = document.getElementById('svgContainer');
+    const downloadLink = document.getElementById('downloadLink');
+
+    let selectedFile = null;
+
+    // Click to open file picker
+    dropZone.addEventListener('click', () => fileInput.click());
+
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files.length) setFile(fileInput.files[0]);
+    });
+
+    // Drag & drop
+    dropZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropZone.classList.add('dragover');
+    });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('dragover');
+      if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
+    });
+
+    function setFile(file) {
+      const ext = file.name.split('.').pop().toLowerCase();
+      if (!['dwg', 'dxf'].includes(ext)) {
+        showMessage('error', `Fichier non supporté : .${ext}. Veuillez choisir un fichier .dwg ou .dxf.`);
+        return;
+      }
+      selectedFile = file;
+      fileNameEl.textContent = `Fichier sélectionné : ${file.name} (${formatSize(file.size)})`;
+      convertBtn.disabled = false;
+      clearMessage();
+      previewSection.style.display = 'none';
+    }
+
+    convertBtn.addEventListener('click', async () => {
+      if (!selectedFile) return;
+
+      setLoading(true);
+      clearMessage();
+      previewSection.style.display = 'none';
+
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+
+      try {
+        const response = await fetch('/api/converters/dwg-to-svg/convert', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({ detail: 'Erreur inconnue.' }));
+          showMessage('error', data.detail || `Erreur HTTP ${response.status}`);
+          return;
+        }
+
+        const svgText = await response.text();
+
+        // Show warnings if any
+        const warnings = response.headers.get('X-Conversion-Warnings');
+        if (warnings) showMessage('warning', `Avertissement : ${warnings}`);
+
+        // Display SVG inline
+        svgContainer.innerHTML = svgText;
+        const svgEl = svgContainer.querySelector('svg');
+        if (svgEl) {
+          svgEl.removeAttribute('width');
+          svgEl.removeAttribute('height');
+          svgEl.style.maxWidth = '100%';
+        }
+
+        // Set up download link
+        const blob = new Blob([svgText], { type: 'image/svg+xml' });
+        downloadLink.href = URL.createObjectURL(blob);
+        downloadLink.download = selectedFile.name.replace(/\.(dwg|dxf)$/i, '.svg');
+
+        previewSection.style.display = 'block';
+        if (!warnings) showMessage('success', 'Conversion réussie !');
+
+      } catch (err) {
+        showMessage('error', `Erreur réseau : ${err.message}`);
+      } finally {
+        setLoading(false);
+      }
+    });
+
+    function setLoading(loading) {
+      convertBtn.disabled = loading;
+      btnText.style.display = loading ? 'none' : 'inline';
+      spinner.style.display = loading ? 'block' : 'none';
+    }
+
+    function showMessage(type, text) {
+      messageEl.className = `message ${type}`;
+      messageEl.textContent = text;
+    }
+
+    function clearMessage() {
+      messageEl.className = 'message';
+      messageEl.textContent = '';
+    }
+
+    function formatSize(bytes) {
+      if (bytes < 1024) return `${bytes} o`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} Ko`;
+      return `${(bytes / 1024 / 1024).toFixed(1)} Mo`;
+    }
+  </script>
+</body>
+</html>
