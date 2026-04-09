@@ -1,4 +1,5 @@
 import os
+import platform
 import shutil
 import subprocess
 import tempfile
@@ -49,25 +50,64 @@ def convert(file_bytes: bytes, filename: str) -> ConversionResult:
 
 
 def _dwg_to_svg(dwg_path: str, warnings: list[str]) -> str:
-    """Convert a DWG file to SVG using LibreCAD (DWG → PDF) then PyMuPDF (PDF → SVG).
+    """Convert a DWG file to SVG.
 
-    LibreCAD always writes the PDF next to the input file (ignores -o), so we
-    place the input in a dedicated temp directory to keep cleanup tidy.
+    Strategy 1 — ODA File Converter (cross-platform, best quality):
+        ezdxf.addons.odafc reads DWG → DXF in-memory, then we render to SVG.
+
+    Strategy 2 — LibreCAD (Linux/macOS fallback):
+        librecad dxf2pdf -a  →  PyMuPDF PDF → SVG.
+
+    If neither tool is available a ConversionError is raised with
+    clear installation instructions.
+    """
+    # --- Strategy 1: ODA File Converter ---
+    try:
+        from ezdxf.addons import odafc
+        if odafc.is_installed():
+            doc = odafc.readfile(dwg_path)
+            return _render_to_svg(doc)
+    except Exception:
+        pass  # ODA not installed or failed — try next strategy
+
+    # --- Strategy 2: LibreCAD (subprocess) ---
+    if shutil.which("librecad") is not None:
+        return _dwg_to_svg_via_librecad(dwg_path, warnings)
+
+    # --- Nothing available ---
+    raise ConversionError(
+        "Aucun outil de conversion DWG n'est installé sur le serveur. "
+        "Installez l'un des outils suivants :\n"
+        "• ODA File Converter (recommandé, Windows/Linux/macOS) : "
+        "https://www.opendesign.com/guestfiles/oda_file_converter\n"
+        "• LibreCAD (Linux/macOS) : https://librecad.org\n\n"
+        "Alternative : exportez votre fichier en DXF depuis AutoCAD ou FreeCAD "
+        "et uploadez le fichier .dxf."
+    )
+
+
+def _dwg_to_svg_via_librecad(dwg_path: str, warnings: list[str]) -> str:
+    """DWG → PDF via LibreCAD, then PDF → SVG via PyMuPDF.
+
+    LibreCAD writes the PDF next to the input file, so we copy the DWG
+    into a dedicated temp directory to keep cleanup tidy.
     """
     work_dir = tempfile.mkdtemp(prefix="allconv_")
     try:
-        # Copy DWG into work dir so librecad outputs the PDF there too
-        dwg_name = Path(dwg_path).name
-        work_dwg = os.path.join(work_dir, dwg_name)
+        work_dwg = os.path.join(work_dir, Path(dwg_path).name)
         shutil.copy2(dwg_path, work_dwg)
         expected_pdf = Path(work_dwg).with_suffix(".pdf")
 
-        proc = subprocess.run(
+        env = {**os.environ}
+        if platform.system() != "Windows":
+            env.update({"QT_QPA_PLATFORM": "offscreen", "XDG_RUNTIME_DIR": "/tmp"})
+
+        subprocess.run(
             ["librecad", "dxf2pdf", "-a", work_dwg],
             capture_output=True,
             text=True,
             timeout=60,
-            env={**os.environ, "QT_QPA_PLATFORM": "offscreen", "XDG_RUNTIME_DIR": "/tmp"},
+            env=env,
         )
 
         if not expected_pdf.exists():
