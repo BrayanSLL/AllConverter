@@ -2,3 +2,4 @@ fastapi==0.115.0
 uvicorn[standard]==0.30.0
 python-multipart==0.0.9
 ezdxf[draw]==1.4.3
+PyMuPDF==1.25.5

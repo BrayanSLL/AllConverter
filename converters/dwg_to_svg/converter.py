@@ -1,4 +1,6 @@
 import os
+import shutil
+import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,11 +23,7 @@ class ConversionResult:
 
 
 def convert(file_bytes: bytes, filename: str) -> ConversionResult:
-    """Convert DWG or DXF bytes to an SVG string.
-
-    A temporary file is used because ezdxf requires a real path (not a stream)
-    for DWG files. The temp file is always cleaned up, even on error.
-    """
+    """Convert DWG or DXF bytes to an SVG string."""
     suffix = Path(filename).suffix.lower()
     if suffix not in (".dwg", ".dxf"):
         raise ConversionError(
@@ -40,25 +38,75 @@ def convert(file_bytes: bytes, filename: str) -> ConversionResult:
         tmp_path = tmp.name
 
     try:
-        doc = _load_document(tmp_path, suffix, warnings)
-        svg = _render_to_svg(doc)
+        if suffix == ".dwg":
+            svg = _dwg_to_svg(tmp_path, warnings)
+        else:
+            doc = _load_dxf(tmp_path, warnings)
+            svg = _render_to_svg(doc)
         return ConversionResult(svg_content=svg, warnings=warnings)
     finally:
         os.unlink(tmp_path)
 
 
-def _load_document(path: str, suffix: str, warnings: list[str]):
-    """Load a DXF document, falling back to recovery mode for corrupted DXF files."""
+def _dwg_to_svg(dwg_path: str, warnings: list[str]) -> str:
+    """Convert a DWG file to SVG using LibreCAD (DWG → PDF) then PyMuPDF (PDF → SVG).
+
+    LibreCAD always writes the PDF next to the input file (ignores -o), so we
+    place the input in a dedicated temp directory to keep cleanup tidy.
+    """
+    work_dir = tempfile.mkdtemp(prefix="allconv_")
+    try:
+        # Copy DWG into work dir so librecad outputs the PDF there too
+        dwg_name = Path(dwg_path).name
+        work_dwg = os.path.join(work_dir, dwg_name)
+        shutil.copy2(dwg_path, work_dwg)
+        expected_pdf = Path(work_dwg).with_suffix(".pdf")
+
+        proc = subprocess.run(
+            ["librecad", "dxf2pdf", "-a", work_dwg],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env={**os.environ, "QT_QPA_PLATFORM": "offscreen", "XDG_RUNTIME_DIR": "/tmp"},
+        )
+
+        if not expected_pdf.exists():
+            raise ConversionError(
+                "LibreCAD n'a pas pu ouvrir le fichier DWG. "
+                "Vérifiez que le fichier n'est pas corrompu et qu'il utilise "
+                "un format DWG supporté (R2000–R2018)."
+            )
+
+        return _pdf_to_svg(str(expected_pdf), warnings)
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def _pdf_to_svg(pdf_path: str, warnings: list[str]) -> str:
+    """Convert the first page of a PDF to an SVG string using PyMuPDF."""
+    import fitz  # PyMuPDF
+
+    doc = fitz.open(pdf_path)
+    if doc.page_count == 0:
+        raise ConversionError("Le PDF généré est vide.")
+
+    page = doc[0]
+    svg = page.get_svg_image(matrix=fitz.Identity)
+
+    if doc.page_count > 1:
+        warnings.append(
+            f"Le fichier DWG contient {doc.page_count} feuilles ; "
+            "seule la première a été convertie."
+        )
+
+    return svg
+
+
+def _load_dxf(path: str, warnings: list[str]):
+    """Load a DXF document, with recovery fallback for corrupted files."""
     try:
         return ezdxf.readfile(path)
-    except ezdxf.DXFError as primary_err:
-        if suffix == ".dwg":
-            raise ConversionError(
-                f"Impossible de lire le fichier DWG : {primary_err}. "
-                "Seuls les fichiers DWG compatibles DXF sont supportés. "
-                "Essayez d'exporter en DXF R2018 depuis AutoCAD."
-            ) from primary_err
-        # DXF file: attempt recovery
+    except Exception:
         try:
             doc, auditor = recover.readfile(path)
             if auditor.has_errors:
@@ -69,10 +117,8 @@ def _load_document(path: str, suffix: str, warnings: list[str]):
             return doc
         except Exception as recovery_err:
             raise ConversionError(
-                f"Impossible de lire ou récupérer le fichier DXF : {recovery_err}"
+                f"Impossible de lire le fichier DXF : {recovery_err}"
             ) from recovery_err
-    except Exception as err:
-        raise ConversionError(f"Erreur inattendue à la lecture : {err}") from err
 
 
 def _render_to_svg(doc) -> str:
@@ -86,6 +132,5 @@ def _render_to_svg(doc) -> str:
     backend = SVGBackend()
     Frontend(ctx, backend).draw_layout(msp, finalize=True, layout_properties=layout_props)
 
-    # Page with auto-detect size (width=0, height=0) + 5mm margins
     page = layout.Page(0, 0, layout.Units.mm, layout.Margins.all(5))
     return backend.get_string(page)
